@@ -235,9 +235,7 @@ class Run(Tool):
                 response_options = ["Recompile and Run", "Recompile and Download", "Exit"]
                 while True:
                     try:
-                        response = await hub.race_disconnect(questionary.select(
-                        "Would you like to re-compile your code?", choices=response_options,
-                        ).ask_async())
+                        response = await hub.race_disconnect(questionary.select("Would you like to re-compile your code?", choices=response_options).ask_async())
 
                     except RuntimeError:
                         # Allow terminal to settle before creating a new prompt
@@ -461,6 +459,7 @@ class Udev(Tool):
         print(read_text(resources, resources.UDEV_RULES))
 
 class Tui(Tool):
+
     def add_parser(self, subparsers: argparse._SubParsersAction):
         parser = subparsers.add_parser("tui", help="open a user interface")
         parser.tool = self
@@ -470,33 +469,32 @@ class Tui(Tool):
 
         match tool_choices.index(await questionary.select("What would you like to do?", tool_choices).ask_async()):
             case 0:
-                connection_type = await questionary.select("How do you want to connect to the hub?", ["bluetooth", "usb"]).ask_async()
-                file_path = os.path.expanduser(await questionary.path("What file would you like to run?", complete_style=CompleteStyle.COLUMN, file_filter=lambda name: name.endswith(".py")).ask_async())
-                hub_name = await questionary.text("What is the name of your pybricks hub? (enter for any)").ask_async() if connection_type == "bluetooth" else None
-                other_options_list = ["Start the program immediately after downloading it.", "Wait for the program to complete before disconnecting. Only applies when starting program right away.", "Add a menu option to resend the code with bluetooth instead of disconnecting from the robot after the program ends."]
-                other_options = await questionary.checkbox("Select wanted options.", [Choice(other_options_list[0], checked=True), Choice(other_options_list[1], checked=True), Choice(other_options_list[2])]).ask_async()
+                connection_type=await questionary.select("How do you want to connect to the hub?", ["bluetooth", "usb"]).ask_async()
+                file_path=os.path.expanduser(await questionary.path("What file would you like to run?", complete_style=CompleteStyle.COLUMN, file_filter=lambda name: name.endswith(".py")).ask_async())
+                hub_name=await questionary.text("What is the name of your pybricks hub? (enter for any)").ask_async() if connection_type == "bluetooth" else None
+                other_options_list=["Start the program immediately after downloading it.", "Wait for the program to complete before disconnecting. Only applies when starting program right away.", "Add a menu option to resend the code with bluetooth instead of disconnecting from the robot after the program ends."]
+                other_options=await questionary.checkbox("Select wanted options.", [Choice(other_options_list[0], checked=True), Choice(other_options_list[1], checked=True), Choice(other_options_list[2])]).ask_async()
 
                 args = argparse.Namespace(
-                    conntype = "ble" if connection_type == "bluetooth" else "usb",
+                    conntype="ble" if connection_type == "bluetooth" else "usb",
                     file=io.open(file_path, "r"),
-                    name = hub_name if hub_name else None,
-                    start = True if other_options_list[0] in other_options else False,
-                    wait = True if other_options_list[1] in other_options else False,
-                    stay_connected = True if other_options_list[2] in other_options else False,
+                    name=hub_name if hub_name else None,
+                    start=True if other_options_list[0] in other_options else False,
+                    wait=True if other_options_list[1] in other_options else False,
+                    stay_connected=True if other_options_list[2] in other_options else False,
                 )
 
                 await Run().run(args)
 
-
             case 1:
                 args = argparse.Namespace(
-                    firmware = os.path.expanduser(await questionary.path("What file would you like to flash?", complete_style=CompleteStyle.COLUMN, file_filter=lambda name: name.endswith(".zip")).ask_async()),
-                    name = await questionary.text("What would you like to name your hub?").ask_async(),
+                    firmware=os.path.expanduser(await questionary.path("What file would you like to flash?", complete_style=CompleteStyle.COLUMN, file_filter=lambda name: name.endswith(".zip")).ask_async()),
+                    name=await questionary.text("What would you like to name your hub?").ask_async(),
                 )
                 await Flash().run(args)
 
             case 2:
-                actions = ["backup firmware using DFU", "restore firmware using DFU"]
+                actions=["backup firmware using DFU", "restore firmware using DFU"]
                 match actions.index(await questionary.select("What would you like to do?", actions).ask_async()):
                     case 0:
                         pass
@@ -508,7 +506,6 @@ class Tui(Tool):
 
 def main():
     """Runs ``pybricksdev`` command line interface."""
-
     if sys.platform == "win32":
         # Hack around bad side-effects of pythoncom on Windows
         try:
