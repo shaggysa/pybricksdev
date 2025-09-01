@@ -6,6 +6,7 @@
 import argparse
 import asyncio
 import contextlib
+import io
 import logging
 import os
 import sys
@@ -17,6 +18,8 @@ from typing import ContextManager, TextIO
 import argcomplete
 import questionary
 from argcomplete.completers import FilesCompleter
+from prompt_toolkit.shortcuts import CompleteStyle
+from questionary import Choice
 
 from pybricksdev import __name__ as MODULE_NAME
 from pybricksdev import __version__ as MODULE_VERSION
@@ -221,25 +224,46 @@ class Run(Tool):
         # Connect to the address and run the script
         await hub.connect()
         try:
-            while True:
-                with _get_script_path(args.file) as script_path:
-                    if args.start:
-                        await hub.run(script_path, args.wait)
-                    else:
-                        await hub.download(script_path)
+            with _get_script_path(args.file) as script_path:
+                if args.start:
+                    await hub.run(script_path, args.wait)
+                else:
+                    await hub.download(script_path)
 
-                if not args.wait or not args.stay_connected:
-                    break
+            if args.stay_connected:
 
-                resend = await questionary.select(
-                    "Would you like to resend your code?", choices=["Resend", "Exit"]
-                ).ask_async()
+                response_options = ["Recompile and Run", "Recompile and Download", "Exit"]
+                while True:
+                    try:
+                        response = await hub.race_disconnect(questionary.select(
+                        "Would you like to re-compile your code?", choices=response_options,
+                        ).ask_async())
 
-                if resend == "Exit":
-                    break
+                    except RuntimeError:
+                        # Allow terminal to settle before creating a new prompt
+                        await asyncio.sleep(0.1)
 
-        except RuntimeError:
-            print("The hub is no longer connected.")
+                        if await questionary.confirm("The hub has been disconnected. Would you like to re-connect?").ask_async():
+                            if args.conntype == "ble":
+                                print(f"Searching for {args.name or 'any hub with Pybricks service'}...")
+                                device_or_address = await find_ble(args.name)
+                                hub = PybricksHubBLE(device_or_address)
+                            elif args.conntype == "usb":
+                                device_or_address = find_usb(custom_match=is_pybricks_usb)
+                                hub = PybricksHubUSB(device_or_address)
+
+                            await hub.connect()
+                            continue
+
+                        else:
+                            break
+
+                    with _get_script_path(args.file) as script_path:
+                        match response_options.index(response):
+                            case 0:
+                                await hub.run(script_path, True)
+                            case 1:
+                                await hub.download(script_path)
 
         finally:
             await hub.disconnect()
@@ -436,6 +460,51 @@ class Udev(Tool):
 
         print(read_text(resources, resources.UDEV_RULES))
 
+class Tui(Tool):
+    def add_parser(self, subparsers: argparse._SubParsersAction):
+        parser = subparsers.add_parser("tui", help="open a user interface")
+        parser.tool = self
+
+    async def run(self, args: argparse.Namespace):
+        tool_choices = ["run a Pybricks program", "flash firmware on a LEGO Powered Up device", "use DFU to backup or restore firmware", "update firmware on a LEGO Powered Up device using TI OAD", "interactive REPL for sending and receiving LWP3 messages"]
+
+        match tool_choices.index(await questionary.select("What would you like to do?", tool_choices).ask_async()):
+            case 0:
+                connection_type = await questionary.select("How do you want to connect to the hub?", ["bluetooth", "usb"]).ask_async()
+                file_path = os.path.expanduser(await questionary.path("What file would you like to run?", complete_style=CompleteStyle.COLUMN, file_filter=lambda name: name.endswith(".py")).ask_async())
+                hub_name = await questionary.text("What is the name of your pybricks hub? (enter for any)").ask_async() if connection_type == "bluetooth" else None
+                other_options_list = ["Start the program immediately after downloading it.", "Wait for the program to complete before disconnecting. Only applies when starting program right away.", "Add a menu option to resend the code with bluetooth instead of disconnecting from the robot after the program ends."]
+                other_options = await questionary.checkbox("Select wanted options.", [Choice(other_options_list[0], checked=True), Choice(other_options_list[1], checked=True), Choice(other_options_list[2])]).ask_async()
+
+                args = argparse.Namespace(
+                    conntype = "ble" if connection_type == "bluetooth" else "usb",
+                    file=io.open(file_path, "r"),
+                    name = hub_name if hub_name else None,
+                    start = True if other_options_list[0] in other_options else False,
+                    wait = True if other_options_list[1] in other_options else False,
+                    stay_connected = True if other_options_list[2] in other_options else False,
+                )
+
+                await Run().run(args)
+
+
+            case 1:
+                args = argparse.Namespace(
+                    firmware = os.path.expanduser(await questionary.path("What file would you like to flash?", complete_style=CompleteStyle.COLUMN, file_filter=lambda name: name.endswith(".zip")).ask_async()),
+                    name = await questionary.text("What would you like to name your hub?").ask_async(),
+                )
+                await Flash().run(args)
+
+            case 2:
+                actions = ["backup firmware using DFU", "restore firmware using DFU"]
+                match actions.index(await questionary.select("What would you like to do?", actions).ask_async()):
+                    case 0:
+                        pass
+                    case 1:
+                        pass
+
+
+
 
 def main():
     """Runs ``pybricksdev`` command line interface."""
@@ -469,7 +538,7 @@ def main():
         help="the tool to use",
     )
 
-    for tool in Compile(), Run(), Flash(), DFU(), OAD(), LWP3(), Udev():
+    for tool in Compile(), Run(), Flash(), DFU(), OAD(), LWP3(), Udev(), Tui():
         tool.add_parser(subparsers)
 
     argcomplete.autocomplete(parser)
