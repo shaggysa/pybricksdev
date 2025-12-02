@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from os import PathLike, path
 from tempfile import NamedTemporaryFile
-from typing import ContextManager, TextIO, Awaitable
+from typing import Awaitable, ContextManager, TextIO
 
 import argcomplete
 import questionary
