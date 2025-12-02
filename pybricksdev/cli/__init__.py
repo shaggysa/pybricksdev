@@ -14,12 +14,15 @@ from abc import ABC, abstractmethod
 from enum import IntEnum
 from os import PathLike, path
 from tempfile import NamedTemporaryFile
-from typing import ContextManager, TextIO
+from typing import ContextManager, TextIO, Awaitable
 
 import argcomplete
 import questionary
 from argcomplete.completers import FilesCompleter
 from packaging.version import Version
+from prompt_toolkit import Application
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.output import DummyOutput
 
 from pybricksdev import __name__ as MODULE_NAME
 from pybricksdev import __version__ as MODULE_VERSION
@@ -34,6 +37,10 @@ PROG_NAME = (
     if sys.argv[0].endswith("__main__.py")
     else path.basename(sys.argv[0])
 )
+
+
+class CancelProgramError(RuntimeError):
+    """Exception raised when a user interrupts the hub's running program from the cli."""
 
 
 class Tool(ABC):
@@ -184,6 +191,55 @@ class Run(Tool):
             default=False,
         )
 
+    async def race_keypress(self, awaitable: Awaitable) -> None:
+        """
+        Races an awaitable against a keypress.
+        The awaitable is cancelled and a CancelProgramError is raised if the key
+        is pressed before the awaitable completes.
+        The output of the awaitable is not passed to the caller.
+        """
+
+        async def stdin_monitor():
+            kb = KeyBindings()
+
+            @kb.add("q")
+            def _(event):
+                event.app.exit()
+
+            app = Application(
+                key_bindings=kb,
+                full_screen=False,
+                mouse_support=False,
+                output=DummyOutput(),
+            )
+
+            await app.run_async()
+
+        stop_task = asyncio.ensure_future(stdin_monitor())
+        awaitable_task = asyncio.ensure_future(awaitable)
+
+        print("------press q to cancel the program------")
+
+        try:
+            done, pending = await asyncio.wait(
+                {awaitable_task, stop_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        except BaseException:
+            awaitable_task.cancel()
+            stop_task.cancel()
+            raise
+
+        for t in pending:
+            t.cancel()
+
+        # allow prompt-toolkit to unbind from the terminal
+        await asyncio.sleep(0.1)
+
+        if stop_task in done:
+            print("------aborting program------")
+            raise CancelProgramError
+
     async def stay_connected_menu(self, hub: PybricksHub, args: argparse.Namespace):
 
         if args.conntype == "ble":
@@ -277,7 +333,7 @@ class Run(Tool):
                 response = await hub.race_disconnect(
                     hub.race_power_button_press(
                         questionary.select(
-                            f"Would you like to re-compile {os.path.basename(args.file.name)}?",
+                            f"Would you like to re-compile {path.basename(args.file.name)}?",
                             response_options,
                             default=(response_options[default_response_option]),
                         ).ask_async()
@@ -290,7 +346,7 @@ class Run(Tool):
 
                     case ResponseOptions.RECOMPILE_RUN:
                         with _get_script_path(args.file) as script_path:
-                            await hub.run(script_path, wait=True)
+                            await self.race_keypress(hub.run(script_path, wait=True))
 
                     case ResponseOptions.RECOMPILE_DOWNLOAD:
                         with _get_script_path(args.file) as script_path:
@@ -303,7 +359,7 @@ class Run(Tool):
                             )
                         else:
                             await hub.start_user_program()
-                            await hub._wait_for_user_program_stop()
+                            await self.race_keypress(hub._wait_for_user_program_stop())
 
                     case ResponseOptions.CHANGE_TARGET_FILE:
                         args.file.close()
@@ -340,15 +396,21 @@ class Run(Tool):
                 # the hub stdout until the user program ends on the hub.
                 try:
                     await hub._wait_for_power_button_release()
-                    await hub._wait_for_user_program_stop()
+                    await self.race_keypress(hub._wait_for_user_program_stop())
 
                 except HubDisconnectError:
                     hub = await reconnect_hub()
+
+                except CancelProgramError:
+                    await hub.stop_user_program()
 
             except HubDisconnectError:
                 # let terminal cool off before making a new prompt
                 await asyncio.sleep(0.3)
                 hub = await reconnect_hub()
+
+            except CancelProgramError:
+                await hub.stop_user_program()
 
     async def run(self, args: argparse.Namespace):
 
@@ -405,7 +467,9 @@ class Run(Tool):
         try:
             with _get_script_path(args.file) as script_path:
                 if args.start:
-                    await hub.run(script_path, args.wait or args.stay_connected)
+                    await self.race_keypress(
+                        hub.run(script_path, args.wait or args.stay_connected)
+                    )
                 else:
                     if args.stay_connected:
                         # if the user later starts the program by pressing the button on the hub,
@@ -421,6 +485,11 @@ class Run(Tool):
             print()
             print("A syntax error occurred while parsing your program:")
             print(e.stderr.decode())
+            if args.stay_connected:
+                await self.stay_connected_menu(hub, args)
+
+        except CancelProgramError:
+            await hub.stop_user_program()
             if args.stay_connected:
                 await self.stay_connected_menu(hub, args)
 

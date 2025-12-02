@@ -620,7 +620,9 @@ class PybricksHub:
 
         # Download the program if a path is provided
         if py_path is not None:
-            await self.download(py_path)
+            # prevent the hub's stored program from being corrupted
+            # in the case that this function gets cancelled
+            await asyncio.shield(self.download(py_path))
 
         # Start the program
         await self.start_user_program()
